@@ -236,3 +236,7 @@ safety — treat it as one layer alongside code review, parameterized queries by
 default, least-privilege DB accounts, and input validation.
 
 License: COCL 1.0.
+
+## Bundled vulnerability database
+
+Ships `sqlsec/cognis_vulndb.jsonl.gz` — **262,351 real vulnerabilities** (OSV across 7 ecosystems) with detailed metadata; offline stdlib loader `vulndb_local.VulnDB`, air-gap ready.
