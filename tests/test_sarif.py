@@ -27,7 +27,12 @@ def test_sarif_driver_lists_every_rule():
     doc = build_sarif([])
     rules = doc["runs"][0]["tool"]["driver"]["rules"]
     ids = {r["id"] for r in rules}
-    assert ids == {r.rule_id for r in all_rules()}
+    from sqlsec.taint import TAINT_RULES
+
+    # The catalog covers both the regex rule set and the data-flow (taint)
+    # rules, so results from either engine resolve to a descriptor.
+    expected = {r.rule_id for r in all_rules()} | set(TAINT_RULES)
+    assert ids == expected
     # Each descriptor carries a level and a security-severity for GitHub.
     for r in rules:
         assert r["defaultConfiguration"]["level"] in {"note", "warning", "error"}

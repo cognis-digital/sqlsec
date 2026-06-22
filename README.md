@@ -12,6 +12,17 @@ of its *structure* instead of being passed as *data*. `sqlsec` looks for the
 glue (string concatenation, f-strings, `%`-formatting, `.format()`, dynamic
 `EXEC`, stacked statements, and friends) and points it out with a safe rewrite.
 
+It ships **two complementary analysis engines**:
+
+- **`sqlsec lint`** — a fast, line-by-line heuristic that flags unsafe
+  *construction patterns* wherever they appear.
+- **`sqlsec taint`** — an **AST data-flow** analyzer that traces an untrusted
+  source (request data, `input()`, env, argv, function args) into a SQL
+  execution sink across multiple lines, and stays silent when the value is bound
+  or allow-listed. It catches multi-line flows the line linter misses and
+  suppresses false positives it can't. See
+  [`docs/TAINT_ANALYSIS.md`](docs/TAINT_ANALYSIS.md).
+
 - Maintainer: **Cognis Digital**
 - License: **COCL 1.0**
 - Python 3.10+, **standard library only** (no third-party runtime deps)
@@ -82,6 +93,38 @@ sqlsec lint . --sarif > sqlsec.sarif
 ```
 
 See [`demos/10-ci-gate`](demos/10-ci-gate/) for the full gate + SARIF workflow.
+
+### Taint: trace untrusted input into SQL sinks
+
+Where `lint` is a per-line pattern matcher, `taint` parses the file into an AST
+and follows whether an untrusted value actually *reaches* a SQL execution sink
+while still untrusted — across assignments, f-strings, `+`, `%`, `.format()`,
+and `.join()`. It catches multi-line flows `lint` cannot connect, and it does
+**not** flag a query built from constants (the false positive `lint` will raise).
+
+```bash
+sqlsec taint path/to/file.py                  # parameter-seeded (high recall)
+sqlsec taint path/to/project/                 # recurses .py files
+sqlsec taint examples/taint_flow.py --explicit-only   # 9 critical flows
+sqlsec taint examples/taint_safe.py --explicit-only   # clean
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--explicit-only` | Only report flows starting at an explicit source (request data / `input()` / env / argv); do **not** treat bare function parameters as tainted. Higher precision, lower recall — ideal for a CI gate. |
+| `--json` / `--sarif` | Machine-readable output, same shape as `lint`. |
+| `--fail-on <severity>` | CI gate exit code, same semantics as `lint`. |
+| `-v` / `--verbose` | Extra hints. |
+
+It reports two data-flow rules:
+
+| ID | Severity | Fires when |
+| --- | --- | --- |
+| SQL100 | critical | untrusted value reaches `execute`/`executemany` built into the query text |
+| SQL101 | critical | untrusted value reaches `executescript` (runs every statement, binds nothing) |
+
+Full write-up, threat context, and a diagram:
+[`docs/TAINT_ANALYSIS.md`](docs/TAINT_ANALYSIS.md).
 
 ### Explain a rule
 

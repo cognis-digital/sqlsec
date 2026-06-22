@@ -18,6 +18,7 @@ from typing import Iterable
 
 from . import __version__
 from .rules import Finding, all_rules
+from .taint import TAINT_RULES
 
 SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA = (
@@ -77,6 +78,29 @@ def _rule_descriptors() -> list[dict]:
                         rule.severity.lower(), "5.0"
                     ),
                     "sqlsec-severity": rule.severity,
+                },
+            }
+        )
+    # Data-flow (taint) rules share the same catalog so SARIF consumers can
+    # resolve results emitted by `sqlsec taint --sarif`.
+    for rid, meta in TAINT_RULES.items():
+        descriptors.append(
+            {
+                "id": rid,
+                "name": "".join(w.capitalize() for w in meta["title"].split()),
+                "shortDescription": {"text": meta["title"]},
+                "fullDescription": {"text": meta["description"]},
+                "helpUri": f"{INFORMATION_URI}#{rid.lower()}",
+                "help": {
+                    "text": f"{meta['description']}\n\nSafe pattern:\n{meta['safe_pattern']}"
+                },
+                "defaultConfiguration": {"level": _level_for(meta["severity"])},
+                "properties": {
+                    "tags": ["security", "sql-injection", "taint-analysis"],
+                    "security-severity": _SECURITY_SEVERITY.get(
+                        meta["severity"].lower(), "5.0"
+                    ),
+                    "sqlsec-severity": meta["severity"],
                 },
             }
         )

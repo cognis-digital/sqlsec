@@ -2,6 +2,7 @@
 
 Subcommands:
   lint     scan .sql/.py files for unsafe query-construction patterns
+  taint    AST data-flow analysis: trace untrusted input into SQL sinks
   explain  describe a rule and its safe pattern
   train    interactive quiz from the authored lesson bank (--list to enumerate)
 
@@ -20,6 +21,7 @@ from typing import Callable, Optional
 from . import __version__
 from . import lessons as lessons_mod
 from . import rules as rules_mod
+from . import taint as taint_mod
 from .linter import gate_should_fail, scan_path
 from .rules import Finding, severity_rank
 from .sarif import build_sarif
@@ -108,6 +110,59 @@ def cmd_lint(args, out=None, err=None) -> int:
     return 0
 
 
+# --- taint ----------------------------------------------------------------
+
+def cmd_taint(args, out=None, err=None) -> int:
+    if out is None:
+        out = sys.stdout
+    if err is None:
+        err = sys.stderr
+    target = args.target
+    if not os.path.exists(target):
+        print(f"error: path not found: {target}", file=err)
+        return 2
+
+    seed = not getattr(args, "explicit_only", False)
+    findings = taint_mod.analyze_path(target, seed_params=seed)
+
+    if getattr(args, "sarif", False):
+        print(json.dumps(build_sarif(findings), indent=2), file=out)
+    elif args.json:
+        payload = {
+            "target": target,
+            "tool": "sqlsec",
+            "mode": "taint",
+            "version": __version__,
+            "summary": _severity_counts(findings),
+            "count": len(findings),
+            "findings": [f.as_dict() for f in findings],
+        }
+        print(json.dumps(payload, indent=2), file=out)
+    else:
+        print(_format_table(findings), file=out)
+        if findings:
+            counts = _severity_counts(findings)
+            summary = ", ".join(
+                f"{counts[s]} {s}" for s in SEVERITY_CHOICES if counts[s]
+            )
+            print(f"\n{len(findings)} tainted flow(s): {summary}", file=out)
+            if args.verbose:
+                print(
+                    "\nEach finding traces an untrusted source to a SQL sink. "
+                    "Run 'sqlsec explain SQL100' for the safe pattern.",
+                    file=out,
+                )
+
+    if gate_should_fail(findings, args.fail_on):
+        if not args.json and not getattr(args, "sarif", False):
+            print(
+                f"\nGate: flows at or above '{args.fail_on}' severity -> failing.",
+                file=err,
+            )
+        return 1
+    return 0
+
+
 # --- explain --------------------------------------------------------------
 
 def cmd_explain(args, out=None, err=None) -> int:
@@ -120,7 +175,26 @@ def cmd_explain(args, out=None, err=None) -> int:
         print("Available rules:\n", file=out)
         for rule in rules_mod.all_rules():
             print(f"  {rule.rule_id}  [{rule.severity:<8}] {rule.title}", file=out)
+        print("\nData-flow (taint) rules:\n", file=out)
+        for rid, meta in taint_mod.TAINT_RULES.items():
+            print(f"  {rid}  [{meta['severity']:<8}] {meta['title']}", file=out)
         print("\nRun 'sqlsec explain <RULE-ID>' for details.", file=out)
+        return 0
+
+    # Data-flow rules live in the taint module, not the regex rule set.
+    tmeta = taint_mod.TAINT_RULES.get(args.rule_id.upper())
+    if tmeta is not None:
+        rid = args.rule_id.upper()
+        print(f"{rid}: {tmeta['title']}", file=out)
+        print(f"Severity: {tmeta['severity']}", file=out)
+        print("Applies to: py (AST data-flow analysis)", file=out)
+        print("", file=out)
+        print("What it catches:", file=out)
+        print(f"  {tmeta['description']}", file=out)
+        print("", file=out)
+        print("Safe pattern:", file=out)
+        for line in tmeta["safe_pattern"].splitlines():
+            print(f"  {line}", file=out)
         return 0
 
     rule = rules_mod.get_rule(args.rule_id)
@@ -276,6 +350,37 @@ def build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", help="print extra hints"
     )
     p_lint.set_defaults(func=cmd_lint)
+
+    p_taint = sub.add_parser(
+        "taint",
+        help="AST data-flow analysis: trace untrusted input into SQL sinks",
+    )
+    p_taint.add_argument("target", help="python file or directory to analyze")
+    p_taint.add_argument("--json", action="store_true", help="emit findings as JSON")
+    p_taint.add_argument(
+        "--sarif",
+        action="store_true",
+        help="emit findings as SARIF 2.1.0 (for GitHub code scanning / CI)",
+    )
+    p_taint.add_argument(
+        "--fail-on",
+        choices=SEVERITY_CHOICES,
+        default=None,
+        help="exit non-zero if any flow is at or above this severity",
+    )
+    p_taint.add_argument(
+        "--explicit-only",
+        action="store_true",
+        help=(
+            "only report flows that start at an explicit untrusted source "
+            "(request data / input / env / argv); do not treat bare function "
+            "parameters as tainted (higher precision, lower recall)"
+        ),
+    )
+    p_taint.add_argument(
+        "-v", "--verbose", action="store_true", help="print extra hints"
+    )
+    p_taint.set_defaults(func=cmd_taint)
 
     p_explain = sub.add_parser(
         "explain", help="describe a rule id and show its safe pattern"

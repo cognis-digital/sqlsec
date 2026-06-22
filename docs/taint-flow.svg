@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 360" font-family="Segoe UI, Arial, sans-serif" role="img" aria-label="sqlsec taint data-flow diagram">
+  <title>sqlsec taint analysis: untrusted source to SQL sink</title>
+  <desc>An untrusted source flows through assignments and string building into a SQL execution sink. Binding or allow-listing breaks the flow.</desc>
+  <rect x="0" y="0" width="760" height="360" fill="#0d1117"/>
+  <text x="380" y="34" fill="#e6edf3" font-size="20" font-weight="700" text-anchor="middle">sqlsec taint: tracing untrusted data into SQL sinks</text>
+
+  <!-- Source -->
+  <rect x="30" y="70" width="180" height="70" rx="10" fill="#3d1d1d" stroke="#f85149" stroke-width="2"/>
+  <text x="120" y="100" fill="#ffa198" font-size="14" font-weight="700" text-anchor="middle">UNTRUSTED SOURCE</text>
+  <text x="120" y="122" fill="#e6edf3" font-size="12" text-anchor="middle">request.args.get(),</text>
+  <text x="120" y="136" fill="#e6edf3" font-size="11" text-anchor="middle">input(), os.environ, argv</text>
+
+  <!-- Propagation -->
+  <rect x="290" y="70" width="180" height="70" rx="10" fill="#3a2e12" stroke="#d29922" stroke-width="2"/>
+  <text x="380" y="100" fill="#e3b341" font-size="14" font-weight="700" text-anchor="middle">PROPAGATION</text>
+  <text x="380" y="122" fill="#e6edf3" font-size="12" text-anchor="middle">+ concat, f-string,</text>
+  <text x="380" y="136" fill="#e6edf3" font-size="11" text-anchor="middle">% , .format(), .join()</text>
+
+  <!-- Sink -->
+  <rect x="550" y="70" width="180" height="70" rx="10" fill="#2d1117" stroke="#f85149" stroke-width="2"/>
+  <text x="640" y="100" fill="#ffa198" font-size="14" font-weight="700" text-anchor="middle">SQL SINK</text>
+  <text x="640" y="122" fill="#e6edf3" font-size="12" text-anchor="middle">cur.execute(query),</text>
+  <text x="640" y="136" fill="#e6edf3" font-size="11" text-anchor="middle">executemany / script</text>
+
+  <!-- arrows -->
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#f85149"/>
+    </marker>
+    <marker id="ag" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#3fb950"/>
+    </marker>
+  </defs>
+  <line x1="210" y1="105" x2="288" y2="105" stroke="#f85149" stroke-width="3" marker-end="url(#ah)"/>
+  <line x1="470" y1="105" x2="548" y2="105" stroke="#f85149" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="380" y="170" fill="#f85149" font-size="13" font-weight="700" text-anchor="middle">tainted flow reaches execution  =  SQL100 / SQL101 (critical)</text>
+
+  <!-- The break -->
+  <rect x="170" y="220" width="420" height="100" rx="10" fill="#11261a" stroke="#3fb950" stroke-width="2"/>
+  <text x="380" y="248" fill="#3fb950" font-size="14" font-weight="700" text-anchor="middle">BREAK THE FLOW = NO FINDING</text>
+  <text x="380" y="272" fill="#e6edf3" font-size="12" text-anchor="middle">Bind the value as a parameter:</text>
+  <text x="380" y="290" fill="#7ee787" font-size="12" font-family="Consolas, monospace" text-anchor="middle">cur.execute("... WHERE id = ?", (value,))</text>
+  <text x="380" y="310" fill="#e6edf3" font-size="11" text-anchor="middle">or map identifiers through a fixed allow-list before they touch the SQL</text>
+
+  <line x1="640" y1="142" x2="450" y2="218" stroke="#3fb950" stroke-width="2.5" stroke-dasharray="5,4" marker-end="url(#ag)"/>
+
+  <text x="380" y="348" fill="#8b949e" font-size="10" text-anchor="middle">Diagram: Cognis Digital, original work (CC0). Generated SVG, no third-party assets.</text>
+</svg>
