@@ -44,6 +44,7 @@ Useful flags:
 | Flag | Effect |
 | --- | --- |
 | `--json` | Emit findings as JSON (for CI / tooling). |
+| `--sarif` | Emit findings as **SARIF 2.1.0** for GitHub code scanning / CI dashboards. |
 | `--fail-on <severity>` | Exit non-zero if any finding is at or above this severity (`info`/`low`/`medium`/`high`/`critical`). Use it as a CI gate. |
 | `--select SQL001,SQL004` | Run only the named rules. |
 | `-v` / `--verbose` | Print extra hints. |
@@ -59,6 +60,28 @@ CRITICAL  SQL005  examples/vulnerable.py:46:5   Dynamic execution of a concatena
 
 Exit codes: `0` = ok / gate not tripped, `1` = `--fail-on` threshold met,
 `2` = bad invocation (missing path, unknown rule).
+
+### Export SARIF for code scanning
+
+`--sarif` emits a SARIF 2.1.0 log that GitHub code scanning, Azure DevOps, and
+most security dashboards ingest directly. sqlsec severities map to SARIF levels
+(`high`/`critical` -> `error`, `medium` -> `warning`, `low`/`info` -> `note`)
+and each result carries a `security-severity` score so GitHub renders the right
+High/Medium/Low badge.
+
+```bash
+sqlsec lint . --sarif > sqlsec.sarif
+```
+
+```yaml
+# GitHub Actions
+- run: sqlsec lint . --sarif > sqlsec.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: sqlsec.sarif
+```
+
+See [`demos/10-ci-gate`](demos/10-ci-gate/) for the full gate + SARIF workflow.
 
 ### Explain a rule
 
@@ -132,6 +155,23 @@ from input, map it through a fixed allow-list before it touches the SQL.
 sqlsec lint examples/vulnerable.py   # many findings
 sqlsec lint examples/safe.py         # none
 ```
+
+## Demos
+
+[`demos/`](demos/) holds ten realistic, self-contained scenarios — each a
+source file in the tool's real input format plus a `SCENARIO.md` (where the data
+came from, the exact run command, expected findings, and how to fix it). They
+span web search endpoints, an auth-bypass review, a self-serve report builder, a
+legacy T-SQL stored proc, a SQLite migration, an e-commerce filter, a nightly
+ETL job, an ORM raw-SQL escape, a clean parameterized rewrite, and a full CI
+gate + SARIF workflow. Between them they exercise every rule (SQL001–SQL012).
+
+```bash
+sqlsec lint demos                       # scan them all
+sqlsec lint demos/04-legacy-stored-proc # one scenario (a .sql file)
+```
+
+See [`demos/README.md`](demos/README.md) for the index.
 
 ## Development
 

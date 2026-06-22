@@ -22,6 +22,7 @@ from . import lessons as lessons_mod
 from . import rules as rules_mod
 from .linter import gate_should_fail, scan_path
 from .rules import Finding, severity_rank
+from .sarif import build_sarif
 
 SEVERITY_CHOICES = ("info", "low", "medium", "high", "critical")
 
@@ -74,7 +75,9 @@ def cmd_lint(args, out=None, err=None) -> int:
 
     findings = scan_path(target, rules=rule_set)
 
-    if args.json:
+    if getattr(args, "sarif", False):
+        print(json.dumps(build_sarif(findings), indent=2), file=out)
+    elif args.json:
         payload = {
             "target": target,
             "tool": "sqlsec",
@@ -96,7 +99,7 @@ def cmd_lint(args, out=None, err=None) -> int:
                 print("\nRun 'sqlsec explain <RULE>' for the safe pattern.", file=out)
 
     if gate_should_fail(findings, args.fail_on):
-        if not args.json:
+        if not args.json and not getattr(args, "sarif", False):
             print(
                 f"\nGate: findings at or above '{args.fail_on}' severity -> failing.",
                 file=err,
@@ -252,6 +255,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_lint.add_argument("target", help="file or directory to scan")
     p_lint.add_argument(
         "--json", action="store_true", help="emit findings as JSON"
+    )
+    p_lint.add_argument(
+        "--sarif",
+        action="store_true",
+        help="emit findings as SARIF 2.1.0 (for GitHub code scanning / CI)",
     )
     p_lint.add_argument(
         "--fail-on",
