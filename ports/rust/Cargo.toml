@@ -1,0 +1,13 @@
+[package]
+name = "sqlsec"
+version = "1.0.0"
+edition = "2021"
+description = "Rust port of the core sqlsec passive SQL-safety check (Cognis Digital)."
+license = "LicenseRef-COCL-1.0"
+
+[dependencies]
+regex = "1"
+
+[lib]
+name = "sqlsec"
+path = "src/lib.rs"

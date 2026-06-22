@@ -4,15 +4,24 @@
 and source files for the construction patterns that lead to SQL injection, and
 ships a small interactive trainer that teaches parameterized-query safety.
 
-It is **educational and defensive only**. It does not execute attacks, connect
-to any database, or run the SQL it inspects — it reads source text and reports.
+It is **educational and defensive only**. Its passive engines do not execute
+attacks, connect to any database, or run the SQL they inspect — they read source
+text and report. The one active capability (`sqlsec probe`) is off by default,
+authorized-use-only, and never sends SQL or payloads (see below).
 
 In plain terms: SQL injection happens when input is glued into a query as part
 of its *structure* instead of being passed as *data*. `sqlsec` looks for the
 glue (string concatenation, f-strings, `%`-formatting, `.format()`, dynamic
 `EXEC`, stacked statements, and friends) and points it out with a safe rewrite.
 
-It ships **two complementary analysis engines**:
+## Passive by default, active only with explicit authorization
+
+`sqlsec` is **passive by default**: every default subcommand analyzes input you
+provide on disk and touches **no network**. There is exactly one active
+capability — `sqlsec probe` — and it is **off by default** and
+**authorized-use-only** (see below).
+
+**Passive engines (the safe default — no network):**
 
 - **`sqlsec lint`** — a fast, line-by-line heuristic that flags unsafe
   *construction patterns* wherever they appear.
@@ -22,6 +31,19 @@ It ships **two complementary analysis engines**:
   or allow-listed. It catches multi-line flows the line linter misses and
   suppresses false positives it can't. See
   [`docs/TAINT_ANALYSIS.md`](docs/TAINT_ANALYSIS.md).
+- **`sqlsec deps`** — an **offline dependency / SBOM audit**: it parses a
+  `requirements.txt`, `package.json`, `package-lock.json`, `Cargo.lock`/`.toml`,
+  `go.mod`, or a CycloneDX SBOM you point it at and cross-references each package
+  against the **bundled 262k-vulnerability database** — fully offline, air-gap
+  ready, no network and no API key.
+
+**Active engine (authorized-use-only, OFF by default):**
+
+- **`sqlsec probe`** — a defensive reachability/banner check of a database
+  endpoint **you are authorized to inspect**. It is gated behind an explicit
+  `--authorized` flag, a `--target-allowlist` (scope), and a `--rate-limit`, and
+  it sends **no SQL, no login, and no exploit payloads**. See
+  [Active probe](#active-probe-authorized-use-only).
 
 - Maintainer: **Cognis Digital**
 - License: **COCL 1.0**
@@ -126,6 +148,64 @@ It reports two data-flow rules:
 Full write-up, threat context, and a diagram:
 [`docs/TAINT_ANALYSIS.md`](docs/TAINT_ANALYSIS.md).
 
+### Audit dependencies against the bundled vuln DB (passive, offline)
+
+`sqlsec deps` reads a dependency manifest, lockfile, or SBOM you provide and
+cross-references every package against the bundled 262k-record OSV corpus. It is
+**fully offline** — no network, no key — so it works in an air-gapped CI.
+
+```bash
+sqlsec deps requirements.txt              # PyPI
+sqlsec deps package-lock.json             # npm lock tree
+sqlsec deps Cargo.lock                     # crates.io
+sqlsec deps go.mod                         # Go modules
+sqlsec deps sbom.cdx.json                  # CycloneDX SBOM (any ecosystem)
+sqlsec deps requirements.txt --json        # machine-readable
+sqlsec deps requirements.txt --fail-on high  # CI gate
+```
+
+The format is sniffed from the filename and content. Each vulnerable package is
+reported as a `DEP001` finding listing the matching advisory ids (CVE / GHSA /
+PYSEC / RUSTSEC …). The match is by package name (and ecosystem when known);
+confirm the affected version range against the upstream advisory before acting.
+Output supports `--json` and `--sarif`, identical in shape to `lint`/`taint`.
+
+### Active probe (authorized-use-only)
+
+> **⚠ AUTHORIZED USE ONLY.** `sqlsec probe` is the **only** part of the tool
+> that touches the network, and it is **disabled by default**. Run it **only**
+> against database endpoints you own or are explicitly authorized to inspect.
+> Unauthorized scanning may be illegal.
+
+It is a *defensive* check: it opens a TCP connection to a target `host:port`,
+reads any greeting banner the service volunteers, and fingerprints the engine.
+It **never sends SQL, never attempts a login, and never sends any exploit or
+injection payload** — it answers "is my DB port reachable, and what does it
+announce itself as", the kind of check a defender runs on their own
+infrastructure.
+
+To run, you **must** supply **all** of:
+
+- `--authorized` — an explicit consent flag asserting you are authorized.
+- `--target-allowlist host[,host...]` — the scope. Any target not in this list
+  is **refused and skipped**; there is no override.
+- `--rate-limit <seconds>` — minimum delay between connection attempts
+  (defaults to `1.0`).
+
+```bash
+# refused — no authorization (exit 2)
+sqlsec probe 127.0.0.1:5432
+
+# authorized check of your own database hosts, rate-limited
+sqlsec probe db1.internal:5432 db2.internal:3306 \
+    --authorized \
+    --target-allowlist db1.internal,db2.internal \
+    --rate-limit 2 --json
+```
+
+A loud authorized-use banner prints on every invocation. Targets outside the
+allowlist are reported as `REFUSED` and are never connected to.
+
 ### Explain a rule
 
 ```bash
@@ -167,6 +247,9 @@ bad sample and stays quiet on the safe equivalent.
 | SQL010 | low | `LIKE` pattern built by concatenation |
 | SQL011 | medium | table/column identifier interpolated into SQL |
 | SQL012 | low | `executescript()` with assembled/dynamic text |
+| SQL100 | critical | (taint) untrusted value reaches `execute`/`executemany` |
+| SQL101 | critical | (taint) untrusted value reaches `executescript` |
+| DEP001 | high | (deps) dependency has a known vulnerability in the bundled DB |
 
 The linter strips Python `#` comments (outside strings) before matching, so
 commentary about SQL is not flagged — except where a rule deliberately targets a
@@ -237,6 +320,34 @@ default, least-privilege DB accounts, and input validation.
 
 License: COCL 1.0.
 
+## Language ports
+
+The **core line-level check** (SQL001 concatenation, SQL002 interpolation,
+SQL003 `%`-formatting) is ported to three more ecosystems under
+[`ports/`](ports/), so the same finding ids surface in Go, Rust, and TypeScript
+codebases:
+
+| Port | Path | Entry point |
+|------|------|-------------|
+| Go         | [`ports/go`](ports/go)     | `sqlsec.ScanText(text) []Finding` |
+| Rust       | [`ports/rust`](ports/rust) | `sqlsec::scan_text(text) -> Vec<Finding>` |
+| TypeScript | [`ports/ts`](ports/ts)     | `scanText(text): Finding[]` |
+
+Each port has its own tests; the Go and Rust ports are built and tested on
+GitHub runners by [`.github/workflows/ports.yml`](.github/workflows/ports.yml).
+See [`ports/README.md`](ports/README.md).
+
 ## Bundled vulnerability database
 
-Ships `sqlsec/cognis_vulndb.jsonl.gz` — **262,351 real vulnerabilities** (OSV across 7 ecosystems) with detailed metadata; offline stdlib loader `vulndb_local.VulnDB`, air-gap ready.
+Ships `sqlsec/cognis_vulndb.jsonl.gz` — **262,351 real vulnerabilities** (OSV
+across 7 ecosystems) with detailed metadata; offline stdlib loader
+`vulndb_local.VulnDB`, air-gap ready. It is **wired into `sqlsec deps`** (see
+above), which audits a manifest / lockfile / SBOM against it entirely offline.
+
+```python
+from sqlsec.vulndb_local import VulnDB
+db = VulnDB()
+db.count()                      # 262351
+db.by_cve("CVE-2021-44228")     # records for that CVE
+db.by_package("requests")       # records affecting a package
+```

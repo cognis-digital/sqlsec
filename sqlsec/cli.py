@@ -1,13 +1,18 @@
 """Command-line interface for sqlsec.
 
 Subcommands:
-  lint     scan .sql/.py files for unsafe query-construction patterns
-  taint    AST data-flow analysis: trace untrusted input into SQL sinks
+  lint     scan .sql/.py files for unsafe query-construction patterns (PASSIVE)
+  taint    AST data-flow analysis: trace untrusted input into SQL sinks (PASSIVE)
+  deps     audit a manifest/lockfile/SBOM against the bundled offline vuln DB
+           (PASSIVE -- no network)
+  probe    ACTIVE, authorization-gated DB-endpoint reachability/banner check
+           (OFF by default; requires --authorized + an allowlist + a rate limit)
   explain  describe a rule and its safe pattern
   train    interactive quiz from the authored lesson bank (--list to enumerate)
 
-Defensive / educational scope only. Standard library only.
-Maintainer: Cognis Digital.
+Passive subcommands (lint/taint/deps) are the safe default and touch no network.
+The active probe is authorized-use-only. Defensive / educational scope only.
+Standard library only. Maintainer: Cognis Digital.
 """
 
 from __future__ import annotations
@@ -19,7 +24,9 @@ import sys
 from typing import Callable, Optional
 
 from . import __version__
+from . import deps as deps_mod
 from . import lessons as lessons_mod
+from . import probe as probe_mod
 from . import rules as rules_mod
 from . import taint as taint_mod
 from .linter import gate_should_fail, scan_path
@@ -163,6 +170,127 @@ def cmd_taint(args, out=None, err=None) -> int:
     return 0
 
 
+# --- deps (passive dependency / SBOM audit) -------------------------------
+
+def cmd_deps(args, out=None, err=None) -> int:
+    if out is None:
+        out = sys.stdout
+    if err is None:
+        err = sys.stderr
+    target = args.target
+    if not os.path.exists(target):
+        print(f"error: path not found: {target}", file=err)
+        return 2
+
+    findings = deps_mod.audit_manifest_file(target)
+
+    if getattr(args, "sarif", False):
+        print(json.dumps(build_sarif(findings), indent=2), file=out)
+    elif args.json:
+        payload = {
+            "target": target,
+            "tool": "sqlsec",
+            "mode": "deps",
+            "version": __version__,
+            "summary": _severity_counts(findings),
+            "count": len(findings),
+            "findings": [f.as_dict() for f in findings],
+        }
+        print(json.dumps(payload, indent=2), file=out)
+    else:
+        print(_format_table(findings), file=out)
+        if findings:
+            counts = _severity_counts(findings)
+            summary = ", ".join(
+                f"{counts[s]} {s}" for s in SEVERITY_CHOICES if counts[s]
+            )
+            print(
+                f"\n{len(findings)} vulnerable dependenc"
+                f"{'y' if len(findings) == 1 else 'ies'}: {summary}",
+                file=out,
+            )
+            if args.verbose:
+                print(
+                    "\nOffline name-match against the bundled OSV corpus. "
+                    "Verify affected ranges against the upstream advisory.",
+                    file=out,
+                )
+
+    if gate_should_fail(findings, args.fail_on):
+        if not args.json and not getattr(args, "sarif", False):
+            print(
+                f"\nGate: dependencies at or above '{args.fail_on}' severity "
+                f"-> failing.",
+                file=err,
+            )
+        return 1
+    return 0
+
+
+# --- probe (ACTIVE, authorization-gated) ----------------------------------
+
+def cmd_probe(args, out=None, err=None, connector=None, sleep=None) -> int:
+    if out is None:
+        out = sys.stdout
+    if err is None:
+        err = sys.stderr
+
+    # The loud authorized-use banner prints on every invocation of the active
+    # capability, regardless of outcome.
+    print(probe_mod.AUTHORIZED_USE_BANNER, file=err)
+
+    allowlist = set()
+    if args.target_allowlist:
+        allowlist = {h.strip() for h in args.target_allowlist.split(",") if h.strip()}
+
+    scope = probe_mod.Scope(
+        authorized=bool(args.authorized),
+        allowlist=frozenset(allowlist),
+        rate_limit=args.rate_limit,
+    )
+
+    kwargs = {}
+    if sleep is not None:
+        kwargs["sleep"] = sleep
+    try:
+        results = probe_mod.probe_targets(
+            args.targets,
+            scope,
+            timeout=args.timeout,
+            default_port=args.default_port,
+            connector=connector,
+            **kwargs,
+        )
+    except probe_mod.AuthorizationError as exc:
+        print(f"error: {exc}", file=err)
+        return 2
+
+    if args.json:
+        payload = {
+            "tool": "sqlsec",
+            "mode": "probe",
+            "version": __version__,
+            "authorized": scope.authorized,
+            "allowlist": sorted(scope.normalized_allowlist()),
+            "rate_limit": scope.rate_limit,
+            "count": len(results),
+            "results": [r.as_dict() for r in results],
+        }
+        print(json.dumps(payload, indent=2), file=out)
+    else:
+        for r in results:
+            if r.error and not r.reachable and "out of scope" in (r.error or ""):
+                print(f"  {r.target}  REFUSED ({r.error})", file=out)
+            elif r.reachable:
+                eng = r.engine or "unknown engine"
+                extra = f" -- banner: {r.banner}" if r.banner else ""
+                print(f"  {r.target}  REACHABLE  [{eng}]{extra}", file=out)
+            else:
+                print(f"  {r.target}  unreachable ({r.error})", file=out)
+        print(f"\n{len(results)} target(s) processed.", file=out)
+    return 0
+
+
 # --- explain --------------------------------------------------------------
 
 def cmd_explain(args, out=None, err=None) -> int:
@@ -178,16 +306,25 @@ def cmd_explain(args, out=None, err=None) -> int:
         print("\nData-flow (taint) rules:\n", file=out)
         for rid, meta in taint_mod.TAINT_RULES.items():
             print(f"  {rid}  [{meta['severity']:<8}] {meta['title']}", file=out)
+        print("\nDependency-audit rules:\n", file=out)
+        for rid, meta in deps_mod.DEP_RULES.items():
+            print(f"  {rid}  [{meta['severity']:<8}] {meta['title']}", file=out)
         print("\nRun 'sqlsec explain <RULE-ID>' for details.", file=out)
         return 0
 
-    # Data-flow rules live in the taint module, not the regex rule set.
-    tmeta = taint_mod.TAINT_RULES.get(args.rule_id.upper())
+    # Data-flow + dependency rules live outside the regex rule set.
+    extra_meta = dict(taint_mod.TAINT_RULES)
+    extra_meta.update(deps_mod.DEP_RULES)
+    tmeta = extra_meta.get(args.rule_id.upper())
     if tmeta is not None:
         rid = args.rule_id.upper()
         print(f"{rid}: {tmeta['title']}", file=out)
         print(f"Severity: {tmeta['severity']}", file=out)
-        print("Applies to: py (AST data-flow analysis)", file=out)
+        if rid.startswith("DEP"):
+            print("Applies to: dependency manifests / lockfiles / SBOM "
+                  "(offline DB audit)", file=out)
+        else:
+            print("Applies to: py (AST data-flow analysis)", file=out)
         print("", file=out)
         print("What it catches:", file=out)
         print(f"  {tmeta['description']}", file=out)
@@ -381,6 +518,82 @@ def build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", help="print extra hints"
     )
     p_taint.set_defaults(func=cmd_taint)
+
+    # --- deps (passive dependency / SBOM audit) ---------------------------
+    p_deps = sub.add_parser(
+        "deps",
+        help=(
+            "audit a manifest/lockfile/SBOM against the bundled offline "
+            "vuln DB (PASSIVE -- no network)"
+        ),
+    )
+    p_deps.add_argument(
+        "target",
+        help=(
+            "dependency file to audit: requirements.txt, package.json, "
+            "package-lock.json, Cargo.lock/toml, go.mod, or a CycloneDX SBOM"
+        ),
+    )
+    p_deps.add_argument("--json", action="store_true", help="emit findings as JSON")
+    p_deps.add_argument(
+        "--sarif",
+        action="store_true",
+        help="emit findings as SARIF 2.1.0 (for GitHub code scanning / CI)",
+    )
+    p_deps.add_argument(
+        "--fail-on",
+        choices=SEVERITY_CHOICES,
+        default=None,
+        help="exit non-zero if any vulnerable dependency is at/above this severity",
+    )
+    p_deps.add_argument(
+        "-v", "--verbose", action="store_true", help="print extra hints"
+    )
+    p_deps.set_defaults(func=cmd_deps)
+
+    # --- probe (ACTIVE, authorization-gated) ------------------------------
+    p_probe = sub.add_parser(
+        "probe",
+        help=(
+            "ACTIVE: reachability/banner check of a DB endpoint you are "
+            "AUTHORIZED to inspect (OFF by default; requires --authorized + "
+            "--target-allowlist + a rate limit). Sends NO SQL/login/payloads."
+        ),
+    )
+    p_probe.add_argument(
+        "targets", nargs="+",
+        help="one or more host[:port] targets (must be in --target-allowlist)",
+    )
+    p_probe.add_argument(
+        "--authorized", action="store_true",
+        help=(
+            "REQUIRED consent flag asserting you are authorized to inspect the "
+            "targets. Without it, the probe is refused."
+        ),
+    )
+    p_probe.add_argument(
+        "--target-allowlist", default=None,
+        help=(
+            "REQUIRED comma-separated scope of permitted hosts/IPs. Targets not "
+            "in this list are refused and skipped."
+        ),
+    )
+    p_probe.add_argument(
+        "--rate-limit", dest="rate_limit", type=float, default=1.0,
+        help="minimum seconds between connection attempts (default: 1.0)",
+    )
+    p_probe.add_argument(
+        "--timeout", type=float, default=3.0,
+        help="per-target connection timeout in seconds (default: 3.0)",
+    )
+    p_probe.add_argument(
+        "--default-port", dest="default_port", type=int, default=5432,
+        help="port to use when a target omits one (default: 5432 / PostgreSQL)",
+    )
+    p_probe.add_argument(
+        "--json", action="store_true", help="emit results as JSON"
+    )
+    p_probe.set_defaults(func=cmd_probe)
 
     p_explain = sub.add_parser(
         "explain", help="describe a rule id and show its safe pattern"

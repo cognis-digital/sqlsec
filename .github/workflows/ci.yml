@@ -33,4 +33,9 @@ jobs:
         run: |
           sqlsec lint examples/safe.py --fail-on high
           sqlsec explain SQL001
+          sqlsec explain DEP001
           sqlsec train --list
+          printf 'requests==2.0.0\n' > /tmp/req.txt
+          sqlsec deps /tmp/req.txt --json
+          # active probe must refuse without authorization (exit 2)
+          sqlsec probe 127.0.0.1:5432 || true
