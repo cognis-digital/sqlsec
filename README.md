@@ -14,6 +14,80 @@ of its *structure* instead of being passed as *data*. `sqlsec` looks for the
 glue (string concatenation, f-strings, `%`-formatting, `.format()`, dynamic
 `EXEC`, stacked statements, and friends) and points it out with a safe rewrite.
 
+
+<!-- cognis:example:start -->
+## 🔎 Example output
+
+Real, reproducible output from the tool — runs offline:
+
+```console
+$ sqlsec --version
+sqlsec 1.0.0
+```
+
+```console
+$ sqlsec --help
+usage: sqlsec [-h] [--version] {lint,taint,deps,probe,explain,train} ...
+
+Defensive SQL-safety linter + trainer. Scans source for unsafe query
+construction and teaches parameterized-query safety. It does not execute
+attacks.
+
+positional arguments:
+  {lint,taint,deps,probe,explain,train}
+    lint                scan .sql/.py files for unsafe query-construction
+                        patterns
+    taint               AST data-flow analysis: trace untrusted input into SQL
+                        sinks
+    deps                audit a manifest/lockfile/SBOM against the bundled
+                        offline vuln DB (PASSIVE -- no network)
+    probe               ACTIVE: reachability/banner check of a DB endpoint you
+                        are AUTHORIZED to inspect (OFF by default; requires
+                        --authorized + --target-allowlist + a rate limit).
+                        Sends NO SQL/login/payloads.
+    explain             describe a rule id and show its safe pattern
+    train               interactive SQL-safety quiz from the lesson bank
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
+```
+
+> Blocks above are real `sqlsec` output — reproduce them from a clone.
+
+**Sample result format** _(illustrative values — run on your own data for real findings):_
+
+```
+{
+  "results": [
+    {
+      "file": "/path/to/file.sql",
+      "issues": [
+        {
+          "line": 10,
+          "column": 5,
+          "message": "Unparameterized query: SELECT * FROM users WHERE name = 'John'",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "file": "/path/to/another/file.py",
+      "issues": [
+        {
+          "line": 20,
+          "column": 10,
+          "message": "Untrusted input used in SQL query: user_input = request.args.get('username')",
+          "severity": "error"
+        }
+      ]
+    }
+  ]
+}
+```
+
+<!-- cognis:example:end -->
+
 ## Passive by default, active only with explicit authorization
 
 `sqlsec` is **passive by default**: every default subcommand analyzes input you

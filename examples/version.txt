@@ -1,0 +1,3 @@
+$ sqlsec --version
+
+sqlsec 1.0.0
